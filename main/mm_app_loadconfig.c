@@ -26,17 +26,17 @@
 #ifdef APP_HALOW_SSID
 #define DEFAULT_HALOW_SSID APP_HALOW_SSID
 #elif defined(OPENMANET_MESH)
-#define DEFAULT_HALOW_SSID "haven"
+#define DEFAULT_HALOW_SSID "gray-M"
 #else
-#define DEFAULT_HALOW_SSID "grey-AP"
+#define DEFAULT_HALOW_SSID "gray-M"
 #endif
 
 #ifdef APP_HALOW_PASSPHRASE
 #define DEFAULT_HALOW_PASSPHRASE APP_HALOW_PASSPHRASE
 #elif defined(OPENMANET_MESH)
-#define DEFAULT_HALOW_PASSPHRASE "havenmesh"
+#define DEFAULT_HALOW_PASSPHRASE "gray-M"
 #else
-#define DEFAULT_HALOW_PASSPHRASE "heltec.org"
+#define DEFAULT_HALOW_PASSPHRASE "Dear!me2"
 #endif
 
 #ifndef SECURITY_TYPE

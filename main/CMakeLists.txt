@@ -1,12 +1,28 @@
+set(_cfg_path "${CMAKE_CURRENT_LIST_DIR}/camera_build_config.h")
+file(READ "${_cfg_path}" _camera_build_config_h)
+
+if(_camera_build_config_h MATCHES "#define[ \t]+USE_WIFI[ \t]+([01])")
+    set(USE_WIFI "${CMAKE_MATCH_1}")
+else()
+    set(USE_WIFI 0)
+    message(WARNING "camera_build_config.h: could not parse USE_WIFI — defaulting to 0 (HaLow)")
+endif()
+
+if(_camera_build_config_h MATCHES "#define[ \t]+ENABLE_OV3660_SETTINGS[ \t]+([01])")
+    set(ENABLE_OV3660_SETTINGS "${CMAKE_MATCH_1}")
+else()
+    set(ENABLE_OV3660_SETTINGS 0)
+    message(WARNING "camera_build_config.h: could not parse ENABLE_OV3660_SETTINGS — defaulting to 0")
+endif()
+
+unset(USE_WIFI CACHE)
+unset(ENABLE_OV3660_SETTINGS CACHE)
+
 set(src
     "mm_app_loadconfig.c"
     "mm_app_common.c"
-    "camera_http.c"
+    "camera_httpd.cpp"
     "main.c")
-
-if(NOT DEFINED USE_WIFI)
-    set(USE_WIFI 0)
-endif()
 
 if(USE_WIFI)
     list(APPEND src "app_wifi.c")
@@ -18,8 +34,12 @@ idf_component_register(SRCS ${src}
                        INCLUDE_DIRS "."
                        PRIV_REQUIRES ${priv_requires})
 
-target_compile_definitions(${COMPONENT_LIB} PRIVATE USE_WIFI=${USE_WIFI})
-# camera_http.c reads USE_WIFI for frame pacing and resolution hints
+# Recompile main + httpd when the header changes. Flags come from #include, not -D.
+set_source_files_properties(
+    main.c camera_httpd.cpp
+    PROPERTIES OBJECT_DEPENDS "${_cfg_path}")
+
+set_source_files_properties(camera_httpd.cpp PROPERTIES COMPILE_FLAGS "-Wno-format")
 
 if(OPENMANET_MESH)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE OPENMANET_MESH=1)
@@ -37,4 +57,6 @@ if(NOT DEFINED HALOW_SSID AND NOT OPENMANET_MESH)
     message(STATUS "HaLow defaults: grey-AP / heltec.org")
 endif()
 
-message(STATUS "XIAO camera USE_WIFI=${USE_WIFI}")
+file(TIMESTAMP _cfg_mtime "${_cfg_path}" UTC)
+message(STATUS "camera_build_config.h: ${_cfg_path} (mtime ${_cfg_mtime})")
+message(STATUS "XIAO camera USE_WIFI=${USE_WIFI} ENABLE_OV3660_SETTINGS=${ENABLE_OV3660_SETTINGS}")
