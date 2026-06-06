@@ -1,13 +1,7 @@
 /*
  * Seeed XIAO ESP32-S3 Sense + Wio-WM6108 (Halo kit)
  *
- * Dual network mode (same as HT-HC33 camera):
- *   USE_WIFI=0  HaLow STA — grey-AP / heltec.org (classic HaLow AP)
- *   USE_WIFI=1  2.4 GHz Wi-Fi — blue-2g / change-me (HAVEN point AP)
- *
- * Build:
- *   idf.py build                    # HaLow (default)
- *   idf.py -DUSE_WIFI=1 build       # 2.4 GHz Wi-Fi
+ * Network mode and web UI: edit main/camera_build_config.h (not the HT-HC33 Arduino copy).
  */
 
 #include <stdio.h>
@@ -17,16 +11,13 @@
 #include "mm_app_common.h"
 #include "app_wifi.h"
 #include "camera_http.h"
+#include "camera_build_config.h"
 
 #include "esp_camera.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-#ifndef USE_WIFI
-#define USE_WIFI 0
-#endif
 
 static const char *TAG = "xiao_camera";
 
@@ -103,16 +94,29 @@ static esp_err_t init_camera(void)
     return ESP_OK;
 }
 
+static void print_ov3660_ui_mode(void)
+{
+#if ENABLE_OV3660_SETTINGS
+    printf("OV3660 menu: ON  (ENABLE_OV3660_SETTINGS=1, full settings panel)\n");
+#else
+    printf("OV3660 menu: OFF (ENABLE_OV3660_SETTINGS=0, stream-only UI)\n");
+#endif
+}
+
 static void print_ready(void)
 {
     char ip[48];
 #if USE_WIFI
     if (app_wifi_get_ip_addr(ip, sizeof(ip))) {
-        printf("Camera ready — http://%s/\n\n", ip);
+        printf("Camera ready — http://%s/\n", ip);
+        print_ov3660_ui_mode();
+        printf("\n");
     }
 #else
     if (app_wlan_get_ip_addr(ip, sizeof(ip))) {
-        printf("Camera ready — http://%s/\n\n", ip);
+        printf("Camera ready — http://%s/\n", ip);
+        print_ov3660_ui_mode();
+        printf("\n");
     }
 #endif
 }
@@ -184,6 +188,14 @@ void app_main(void)
     printf(" HAVEN mesh \"haven\" is not used in this mode.\n");
 #endif
     printf(" ESP-IDF 5.1.1\n");
+    printf(" Firmware compiled: %s %s\n", __DATE__, __TIME__);
+    printf(" camera_build_config.h: USE_WIFI=%d ENABLE_OV3660_SETTINGS=%d\n",
+           USE_WIFI, ENABLE_OV3660_SETTINGS);
+#if ENABLE_OV3660_SETTINGS
+    printf(" Web UI: full OV3660 settings\n");
+#else
+    printf(" Web UI: stream-only (no settings panel)\n");
+#endif
     printf("========================================\n\n");
 
 #if USE_WIFI

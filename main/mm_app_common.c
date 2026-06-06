@@ -103,8 +103,83 @@ void app_wlan_init(void)
 }
 
 static struct mmosal_semb *scan_done;
-static int scan_count;
 static bool target_ssid_seen;
+static bool prescan_done;
+
+#define SCAN_MAX_UNIQUE 16
+
+typedef struct {
+    char ssid[MMWLAN_SSID_MAXLEN + 1];
+    int8_t rssi;
+} scan_entry_t;
+
+static scan_entry_t scan_table[SCAN_MAX_UNIQUE];
+static int scan_unique;
+
+static void scan_reset(const char *target)
+{
+    (void)target;
+    scan_unique = 0;
+    target_ssid_seen = false;
+}
+
+static void scan_trim_ssid(char *ssid)
+{
+    size_t len = strlen(ssid);
+    while (len > 0 && (ssid[len - 1] == ' ' || ssid[len - 1] == '\t')) {
+        ssid[--len] = '\0';
+    }
+}
+
+static bool scan_rssi_valid(int rssi)
+{
+    return rssi < 0 && rssi >= -120;
+}
+
+static int8_t scan_pick_rssi(int8_t current, int candidate)
+{
+    if (!scan_rssi_valid(candidate)) {
+        return current;
+    }
+    if (!scan_rssi_valid(current)) {
+        return (int8_t)candidate;
+    }
+    return (candidate > current) ? (int8_t)candidate : current;
+}
+
+static void scan_note_ap(const char *ssid, int rssi, const char *target)
+{
+    char key[MMWLAN_SSID_MAXLEN + 1];
+    (void)mmosal_safer_strcpy(key, ssid, sizeof(key));
+    scan_trim_ssid(key);
+
+    for (int i = 0; i < scan_unique; i++) {
+        if (strcmp(scan_table[i].ssid, key) == 0) {
+            scan_table[i].rssi = scan_pick_rssi(scan_table[i].rssi, rssi);
+            return;
+        }
+    }
+    if (scan_unique >= SCAN_MAX_UNIQUE) {
+        return;
+    }
+    (void)mmosal_safer_strcpy(scan_table[scan_unique].ssid, key, sizeof(scan_table[0].ssid));
+    scan_table[scan_unique].rssi = scan_rssi_valid(rssi) ? (int8_t)rssi : (int8_t)-128;
+    scan_unique++;
+    if (target && strcmp(key, target) == 0) {
+        target_ssid_seen = true;
+    }
+}
+
+static void scan_print_results(void)
+{
+    for (int i = 0; i < scan_unique; i++) {
+        if (scan_rssi_valid(scan_table[i].rssi)) {
+            printf("    %-32s  RSSI %d\n", scan_table[i].ssid, (int)scan_table[i].rssi);
+        } else {
+            printf("    %-32s  RSSI n/a\n", scan_table[i].ssid);
+        }
+    }
+}
 
 static void scan_rx_callback(const struct mmwlan_scan_result *result, void *arg)
 {
@@ -113,13 +188,13 @@ static void scan_rx_callback(const struct mmwlan_scan_result *result, void *arg)
         return;
     }
     char ssid[MMWLAN_SSID_MAXLEN + 1];
-    memcpy(ssid, result->ssid, result->ssid_len);
-    ssid[result->ssid_len] = '\0';
-    printf("    %-32s  RSSI %d\n", ssid, (int)result->rssi);
-    scan_count++;
-    if (target && strcmp(ssid, target) == 0) {
-        target_ssid_seen = true;
+    size_t len = result->ssid_len;
+    if (len > MMWLAN_SSID_MAXLEN) {
+        len = MMWLAN_SSID_MAXLEN;
     }
+    memcpy(ssid, result->ssid, len);
+    ssid[len] = '\0';
+    scan_note_ap(ssid, (int)result->rssi, target);
 }
 
 static void scan_complete_callback(enum mmwlan_scan_state state, void *arg)
@@ -135,8 +210,7 @@ void app_wlan_print_scan(void)
 {
     const char *target = load_halow_ssid_default();
 
-    scan_count = 0;
-    target_ssid_seen = false;
+    scan_reset(target);
     if (scan_done == NULL) {
         scan_done = mmosal_semb_create("scan_done");
     }
@@ -155,10 +229,12 @@ void app_wlan_print_scan(void)
 
     mmosal_semb_wait(scan_done, 30000);
 
-    if (scan_count == 0) {
+    scan_print_results();
+
+    if (scan_unique == 0) {
         printf("  No HaLow APs heard\n");
     } else {
-        printf("  %d AP(s)\n", scan_count);
+        printf("  %d AP(s)\n", scan_unique);
     }
     if (!target_ssid_seen) {
         printf("  WARNING: \"%s\" was NOT in the scan.\n", target);
@@ -178,7 +254,10 @@ static bool join_halow(bool first_join)
 
     if (first_join) {
         printf("HaLow target: \"%s\"  security: SAE  country: US\n", sta_args.ssid);
-        app_wlan_print_scan();
+        if (!prescan_done) {
+            app_wlan_print_scan();
+            prescan_done = true;
+        }
         if (!target_ssid_seen) {
             printf("Join may fail — target SSID not visible in scan.\n");
         }
