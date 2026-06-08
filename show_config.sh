@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Print camera_build_config.h and what CMake last read (run from xiao-halow-camera/)
+# Print camera_build_config.h and what CMake last read (run from project root)
 set -e
 cd "$(dirname "$0")"
 CFG="main/camera_build_config.h"
