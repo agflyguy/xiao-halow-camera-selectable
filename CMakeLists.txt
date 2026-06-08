@@ -7,7 +7,7 @@ if(NOT DEFINED ENV{MMIOT_ROOT})
     else()
         message(FATAL_ERROR
             "MMIOT_ROOT is not set and ~/mm-iot-esp32 was not found.\n"
-            "  cd xiao-halow-camera\n"
+            "  cd xiao-halow-camera-selectable\n"
             "  git clone https://github.com/Seeed-Studio/mm-iot-esp32.git ~/mm-iot-esp32\n"
             "  source ./setenv.sh\n"
             "  idf.py build")
