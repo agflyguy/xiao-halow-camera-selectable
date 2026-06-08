@@ -12,6 +12,9 @@
 #include "app_wifi.h"
 #include "camera_http.h"
 #include "camera_build_config.h"
+#if STREAM_RTSP
+#include "camera_rtsp.h"
+#endif
 
 #include "esp_camera.h"
 #include "esp_event.h"
@@ -28,11 +31,12 @@ static bool frame_has_jpeg_soi(const camera_fb_t *fb)
     return fb && fb->format == PIXFORMAT_JPEG && fb->len >= 2 && fb->buf[0] == 0xFF && fb->buf[1] == 0xD8;
 }
 
-/* OV3660 often logs NO-SOI at CIF; Seeed example uses VGA + PSRAM + fb_count 1 */
+/* OV3660 can log NO-SOI for a few frames after init; discard until JPEG is stable */
 static void camera_warmup(void)
 {
+    vTaskDelay(pdMS_TO_TICKS(200));
     int valid = 0;
-    for (int i = 0; i < 50 && valid < 8; i++) {
+    for (int i = 0; i < 60 && valid < 10; i++) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (frame_has_jpeg_soi(fb)) {
             valid++;
@@ -40,7 +44,7 @@ static void camera_warmup(void)
         if (fb) {
             esp_camera_fb_return(fb);
         }
-        vTaskDelay(pdMS_TO_TICKS(80));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
     printf("Camera warmup: %d valid JPEG frame(s)\n", valid);
 }
@@ -68,13 +72,22 @@ static esp_err_t init_camera(void)
         .ledc_timer = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
         .pixel_format = PIXFORMAT_JPEG,
+#if USE_WIFI
+        .grab_mode = CAMERA_GRAB_LATEST,
+        .fb_count = 2,
+#else
         .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
         .fb_count = 1,
-        /* QVGA: stable OV3660 + small enough for HaLow and Wi-Fi */
+#endif
+#if STREAM_RTSP
+        /* RTSP: smaller frames — micro-rtsp sends many RTP packets per JPEG */
+        .frame_size = FRAMESIZE_QQVGA,
+        .jpeg_quality = USE_WIFI ? 30 : 38,
+#elif USE_WIFI
         .frame_size = FRAMESIZE_QVGA,
-#if USE_WIFI
         .jpeg_quality = 14,
 #else
+        .frame_size = FRAMESIZE_QVGA,
         .jpeg_quality = 18,
 #endif
     };
@@ -82,6 +95,10 @@ static esp_err_t init_camera(void)
     if (err != ESP_OK) {
         return err;
     }
+
+    /* Hide benign cam_hal "NO-SOI" warnings during startup capture */
+    esp_log_level_set("cam_hal", ESP_LOG_ERROR);
+    esp_log_level_set("s3 ll_cam", ESP_LOG_ERROR);
 
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
@@ -109,25 +126,65 @@ static void print_ready(void)
 #if USE_WIFI
     if (app_wifi_get_ip_addr(ip, sizeof(ip))) {
         printf("Camera ready — http://%s/\n", ip);
+#if STREAM_RTSP
+        printf("Live stream (RTSP) — rtsp://%s:8554/mjpeg/1\n", ip);
+        printf("  VLC / ZoneMinder: RTSP URL above (server uses RTP-over-TCP)\n");
+#else
+        printf("Live stream (HTTP) — http://%s/stream\n", ip);
+        printf("VLC / ffmpeg — http://%s/video.mjpg\n", ip);
+#endif
         print_ov3660_ui_mode();
         printf("\n");
     }
 #else
     if (app_wlan_get_ip_addr(ip, sizeof(ip))) {
         printf("Camera ready — http://%s/\n", ip);
+#if STREAM_RTSP
+        printf("Live stream (RTSP) — rtsp://%s:8554/mjpeg/1\n", ip);
+        printf("  VLC / ZoneMinder: RTSP URL above (server uses RTP-over-TCP)\n");
+#else
+        printf("Live stream (HTTP) — http://%s/stream\n", ip);
+        printf("VLC / ffmpeg — http://%s/video.mjpg\n", ip);
+#endif
         print_ov3660_ui_mode();
         printf("\n");
     }
 #endif
 }
 
-static void restart_camera_http(void)
+static void restart_streaming_services(void)
 {
-    if (camera_http_init() == ESP_OK) {
+    bool ok = camera_http_init() == ESP_OK;
+#if STREAM_RTSP
+    if (camera_rtsp_init() != ESP_OK) {
+        ok = false;
+    }
+#endif
+    if (ok) {
         print_ready();
     } else {
-        printf("Web server failed to restart — refresh after IP appears\n");
+        printf("Streaming services failed to restart — retry after IP appears\n");
     }
+}
+
+static void stop_streaming_services(void)
+{
+    camera_http_stop();
+#if STREAM_RTSP
+    camera_rtsp_stop();
+#endif
+}
+
+static bool streaming_services_running(void)
+{
+    if (!camera_http_is_running()) {
+        return false;
+    }
+#if STREAM_RTSP
+    return camera_rtsp_is_running();
+#else
+    return true;
+#endif
 }
 
 /* Same pattern as HT-HC33 maintainHaLowLink(): stop HTTP when down, restart when up */
@@ -144,23 +201,23 @@ static void network_link_task(void *arg)
 #endif
 
         if (link_up) {
-            if (!camera_http_is_running()) {
+            if (!streaming_services_running()) {
 #if USE_WIFI
-                printf("[Wi-Fi] link up — starting web server\n");
+                printf("[Wi-Fi] link up — starting streaming services\n");
 #else
-                printf("[HaLow] link up — starting web server\n");
+                printf("[HaLow] link up — starting streaming services\n");
 #endif
-                restart_camera_http();
+                restart_streaming_services();
             }
             link_was_up = true;
         } else {
-            if (link_was_up || camera_http_is_running()) {
+            if (link_was_up || streaming_services_running()) {
 #if USE_WIFI
-                printf("[Wi-Fi] link lost — stopping web server\n");
+                printf("[Wi-Fi] link lost — stopping streaming services\n");
 #else
-                printf("[HaLow] link lost — stopping web server\n");
+                printf("[HaLow] link lost — stopping streaming services\n");
 #endif
-                camera_http_stop();
+                stop_streaming_services();
                 link_was_up = false;
             }
 #if !USE_WIFI
@@ -189,8 +246,15 @@ void app_main(void)
 #endif
     printf(" ESP-IDF 5.1.1\n");
     printf(" Firmware compiled: %s %s\n", __DATE__, __TIME__);
-    printf(" camera_build_config.h: USE_WIFI=%d ENABLE_OV3660_SETTINGS=%d\n",
-           USE_WIFI, ENABLE_OV3660_SETTINGS);
+    printf(" camera_build_config.h: USE_WIFI=%d ENABLE_OV3660_SETTINGS=%d STREAM_RTSP=%d\n",
+           USE_WIFI, ENABLE_OV3660_SETTINGS, STREAM_RTSP);
+#if STREAM_RTSP
+    printf(" >>> STREAM MODE: RTSP ONLY (port 8554, VLC / ZoneMinder) <<<\n");
+    printf(" >>> HTTP /stream is DISABLED <<<\n");
+#else
+    printf(" >>> STREAM MODE: HTTP ONLY (port 80 /stream) <<<\n");
+    printf(" >>> RTSP is NOT compiled in <<<\n");
+#endif
 #if ENABLE_OV3660_SETTINGS
     printf(" Web UI: full OV3660 settings\n");
 #else
@@ -228,6 +292,11 @@ void app_main(void)
         printf("Camera web server failed to start\n");
         return;
     }
+#if STREAM_RTSP
+    if (camera_rtsp_init() != ESP_OK) {
+        printf("RTSP server failed to start\n");
+    }
+#endif
     print_ready();
 
     xTaskCreate(network_link_task, "net_link", 4096, NULL, 5, NULL);

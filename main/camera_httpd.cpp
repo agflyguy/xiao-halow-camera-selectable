@@ -30,8 +30,10 @@
 
 #if USE_WIFI
 #define FRAME_PERIOD_MS 120
+#define FRAME_PERIOD_MAX_MS 250
 #else
-#define FRAME_PERIOD_MS 280
+#define FRAME_PERIOD_MS 320
+#define FRAME_PERIOD_MAX_MS 800
 #endif
 
 static const char *TAG = "camera_httpd";
@@ -93,6 +95,11 @@ static const char *_STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" 
 static const char *_STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\nX-Timestamp: %d.%06d\r\n\r\n";
 
+typedef enum {
+    STREAM_HTTP_CHUNKED, /* browsers — ESP-IDF chunked multipart */
+    STREAM_HTTP_RAW,     /* VLC / ffmpeg — HTTP/1.0 multipart, no chunked */
+} stream_http_mode_t;
+
 httpd_handle_t stream_httpd = NULL;
 httpd_handle_t camera_httpd = NULL;
 
@@ -101,6 +108,27 @@ static bool s_http_running = false;
 static bool jpeg_has_soi(const uint8_t *buf, size_t len)
 {
     return len >= 2 && buf[0] == 0xFF && buf[1] == 0xD8;
+}
+
+/* Avoid wedging httpd when esp_camera_fb_get() blocks — only a few sockets available. */
+static camera_fb_t *fb_get_jpeg_retry(int max_ms)
+{
+    int elapsed = 0;
+    while (elapsed < max_ms) {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            vTaskDelay(pdMS_TO_TICKS(25));
+            elapsed += 25;
+            continue;
+        }
+        if (fb->format == PIXFORMAT_JPEG && jpeg_has_soi(fb->buf, fb->len)) {
+            return fb;
+        }
+        esp_camera_fb_return(fb);
+        vTaskDelay(pdMS_TO_TICKS(25));
+        elapsed += 25;
+    }
+    return NULL;
 }
 
 #if CONFIG_ESP_FACE_DETECT_ENABLED
@@ -372,16 +400,16 @@ static esp_err_t capture_handler(httpd_req_t *req)
 
 #ifdef CONFIG_LED_ILLUMINATOR_ENABLED
     enable_led(true);
-    vTaskDelay(150 / portTICK_PERIOD_MS); // The LED needs to be turned on ~150ms before the call to esp_camera_fb_get()
-    fb = esp_camera_fb_get();             // or it won't be visible in the frame. A better way to do this is needed.
+    vTaskDelay(150 / portTICK_PERIOD_MS);
+    fb = fb_get_jpeg_retry(3000);
     enable_led(false);
 #else
-    fb = esp_camera_fb_get();
+    fb = fb_get_jpeg_retry(3000);
 #endif
 
-    if (!fb)
-    {
-        ESP_LOGE(TAG, "Camera capture failed");
+    if (!fb) {
+        ESP_LOGE(TAG, "Camera capture timed out");
+        printf("capture failed (timeout) — check camera / Wi-Fi\n");
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
@@ -535,14 +563,79 @@ static bool stream_client_disconnected(esp_err_t err)
     return err == ESP_ERR_HTTPD_RESP_SEND || err == ESP_ERR_HTTPD_INVALID_REQ;
 }
 
-static esp_err_t stream_handler(httpd_req_t *req)
+/* VLC / ffplay / ZoneMinder often fail on chunked multipart MJPEG (ESP-IDF default). */
+static esp_err_t stream_send_raw(httpd_req_t *req, const char *buf, size_t len)
+{
+    if (len == 0) {
+        return ESP_OK;
+    }
+    int sent = httpd_send(req, buf, len);
+    if (sent < 0 || (size_t)sent != len) {
+        return ESP_ERR_HTTPD_RESP_SEND;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t stream_begin_response(httpd_req_t *req)
+{
+    char hdr[384];
+    int n = snprintf(hdr, sizeof(hdr),
+                     "HTTP/1.0 200 OK\r\n"
+                     "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+                     "Pragma: no-cache\r\n"
+                     "Connection: close\r\n"
+                     "Content-Type: multipart/x-mixed-replace; boundary=%s\r\n"
+                     "Access-Control-Allow-Origin: *\r\n"
+                     "\r\n",
+                     PART_BOUNDARY);
+    if (n <= 0 || n >= (int)sizeof(hdr)) {
+        return ESP_ERR_HTTPD_RESP_HDR;
+    }
+    return stream_send_raw(req, hdr, (size_t)n);
+}
+
+static esp_err_t stream_send_frame(httpd_req_t *req, stream_http_mode_t mode, bool *headers_sent,
+                                   const uint8_t *jpg, size_t jpg_len, const struct timeval *ts)
+{
+    esp_err_t res = ESP_OK;
+    char part_buf[128];
+
+    if (mode == STREAM_HTTP_RAW) {
+        if (!*headers_sent) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        res = stream_send_raw(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
+        if (res == ESP_OK) {
+            size_t hlen = snprintf(part_buf, sizeof(part_buf), _STREAM_PART, (unsigned)jpg_len,
+                                   (int)ts->tv_sec, (int)ts->tv_usec);
+            res = stream_send_raw(req, part_buf, hlen);
+        }
+        if (res == ESP_OK) {
+            res = stream_send_raw(req, (const char *)jpg, jpg_len);
+        }
+        return res;
+    }
+
+    res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
+    if (res == ESP_OK) {
+        size_t hlen = snprintf(part_buf, sizeof(part_buf), _STREAM_PART, (unsigned)jpg_len,
+                               (int)ts->tv_sec, (int)ts->tv_usec);
+        res = httpd_resp_send_chunk(req, part_buf, hlen);
+    }
+    if (res == ESP_OK) {
+        res = httpd_resp_send_chunk(req, (const char *)jpg, jpg_len);
+    }
+    return res;
+}
+
+static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
 {
     camera_fb_t *fb = NULL;
     struct timeval _timestamp;
     esp_err_t res = ESP_OK;
     size_t _jpg_buf_len = 0;
     uint8_t *_jpg_buf = NULL;
-    char *part_buf[128];
+    bool headers_sent = false;
 #if CONFIG_ESP_FACE_DETECT_ENABLED
     #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
         bool detected = false;
@@ -564,20 +657,23 @@ static esp_err_t stream_handler(httpd_req_t *req)
 #endif
 #endif
 
-    static int64_t last_frame = 0;
-    if (!last_frame)
-    {
-        last_frame = esp_timer_get_time();
-    }
+    int64_t last_frame = esp_timer_get_time();
 
-    res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
-    if (res != ESP_OK)
-    {
-        return res;
+    if (mode == STREAM_HTTP_CHUNKED) {
+        res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
+        if (res != ESP_OK) {
+            return res;
+        }
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        httpd_resp_set_hdr(req, "X-Framerate", "60");
+    } else {
+        res = stream_begin_response(req);
+        if (res != ESP_OK) {
+            return res;
+        }
+        headers_sent = true;
+        printf("MJPEG client connected (VLC/ffmpeg) — use http://<ip>/video.mjpg\n");
     }
-
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "X-Framerate", "60");
 
 #ifdef CONFIG_LED_ILLUMINATOR_ENABLED
     enable_led(true);
@@ -756,18 +852,8 @@ static esp_err_t stream_handler(httpd_req_t *req)
             vTaskDelay(pdMS_TO_TICKS(30));
             continue;
         }
-        if (res == ESP_OK)
-        {
-            res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
-        }
-        if (res == ESP_OK)
-        {
-            size_t hlen = snprintf((char *)part_buf, 128, _STREAM_PART, _jpg_buf_len, _timestamp.tv_sec, _timestamp.tv_usec);
-            res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
-        }
-        if (res == ESP_OK)
-        {
-            res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
+        if (res == ESP_OK) {
+            res = stream_send_frame(req, mode, &headers_sent, _jpg_buf, _jpg_buf_len, &_timestamp);
         }
         if (fb)
         {
@@ -804,7 +890,15 @@ static esp_err_t stream_handler(httpd_req_t *req)
         frame_time /= 1000;
         ESP_LOGD(TAG, "MJPG: %uB %ums", (unsigned)(_jpg_buf_len), (unsigned)frame_time);
 
-        vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS));
+        int delay_ms = FRAME_PERIOD_MS;
+        if (frame_time > delay_ms) {
+            delay_ms = (int)frame_time + 40;
+            if (delay_ms > FRAME_PERIOD_MAX_MS) {
+                delay_ms = FRAME_PERIOD_MAX_MS;
+            }
+        }
+        last_frame = fr_end;
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 
 #ifdef CONFIG_LED_ILLUMINATOR_ENABLED
@@ -816,6 +910,16 @@ static esp_err_t stream_handler(httpd_req_t *req)
         return ESP_OK;
     }
     return res;
+}
+
+static esp_err_t stream_handler(httpd_req_t *req)
+{
+    return stream_handler_impl(req, STREAM_HTTP_CHUNKED);
+}
+
+static esp_err_t vlc_mjpeg_handler(httpd_req_t *req)
+{
+    return stream_handler_impl(req, STREAM_HTTP_RAW);
 }
 
 static esp_err_t parse_get(httpd_req_t *req, char **obuf)
@@ -1252,7 +1356,11 @@ bool startCameraServer()
     config.recv_wait_timeout = 5;
     config.stack_size = 12288;
     config.lru_purge_enable = true;
-    config.max_open_sockets = 5;
+#if STREAM_RTSP
+    config.max_open_sockets = 3;
+#else
+    config.max_open_sockets = 7;
+#endif
     config.core_id = tskNO_AFFINITY;
 
     httpd_uri_t favicon_uri = {
@@ -1324,6 +1432,19 @@ bool startCameraServer()
         .uri = "/stream",
         .method = HTTP_GET,
         .handler = stream_handler,
+        .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+        ,
+        .is_websocket = true,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = NULL
+#endif
+    };
+
+    httpd_uri_t video_mjpg_uri = {
+        .uri = "/video.mjpg",
+        .method = HTTP_GET,
+        .handler = vlc_mjpeg_handler,
         .user_ctx = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
         ,
@@ -1440,20 +1561,14 @@ bool startCameraServer()
 #else
         httpd_register_uri_handler(camera_httpd, &capture_uri);
 #endif
+#if !STREAM_RTSP
+        httpd_register_uri_handler(camera_httpd, &stream_uri);
+        httpd_register_uri_handler(camera_httpd, &video_mjpg_uri);
+#else
+        ESP_LOGI(TAG, "HTTP MJPEG /stream disabled (STREAM_RTSP=1)");
+#endif
     } else {
         ESP_LOGE(TAG, "Main web server failed: %s", esp_err_to_name(mainServer));
-        return false;
-    }
-
-    config.server_port += 1;
-    config.ctrl_port += 1;
-    ESP_LOGI(TAG, "Starting stream server on port: '%d'", config.server_port);
-    esp_err_t streamServer = httpd_start(&stream_httpd, &config);
-    if (streamServer == ESP_OK)
-    {
-        httpd_register_uri_handler(stream_httpd, &stream_uri);
-    } else {
-        ESP_LOGE(TAG, "Stream server failed: %s", esp_err_to_name(streamServer));
         return false;
     }
 
@@ -1465,9 +1580,11 @@ extern "C" esp_err_t camera_http_init(void)
     if (s_http_running) {
         return ESP_OK;
     }
-    /* errno 104 on send when the browser stops the stream is normal — hide IDF WARN spam */
-    esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
-    esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
+    /* errno 104 on disconnect is normal; accept(23) spam when sockets are busy */
+    esp_log_level_set("httpd", ESP_LOG_NONE);
+    esp_log_level_set("httpd_txrx", ESP_LOG_NONE);
+    esp_log_level_set("httpd_uri", ESP_LOG_NONE);
+    esp_log_level_set("httpd_parse", ESP_LOG_NONE);
     if (!startCameraServer()) {
         return ESP_FAIL;
     }
@@ -1477,6 +1594,9 @@ extern "C" esp_err_t camera_http_init(void)
     printf("HTTP web UI: %s (ENABLE_OV3660_SETTINGS=%d)\n",
            ENABLE_OV3660_SETTINGS ? "full OV3660 settings panel" : "stream-only",
            ENABLE_OV3660_SETTINGS);
+#if STREAM_RTSP
+    printf("HTTP MJPEG /stream disabled — live video is RTSP only\n");
+#endif
     return ESP_OK;
 }
 
