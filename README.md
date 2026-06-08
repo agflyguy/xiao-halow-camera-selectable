@@ -1,6 +1,10 @@
-# Seeed XIAO ESP32-S3 Sense + Wio-WM6108 — camera (HaLow or Wi-Fi)
+# xiao-halow-camera-selectable
 
 ESP-IDF **5.1.1** MJPEG camera server for the [Seeed Halo kit](https://wiki.seeedstudio.com/getting_started_with_wifi_halow_module_for_xiao/) (XIAO ESP32-S3 Sense + WM6108 HaLow module).
+
+**Build-time selectable:** HaLow or 2.4 GHz Wi-Fi; HTTP MJPEG (browser, ZoneMinder, VLC) or optional RTSP.
+
+Verified tag **`ZM + VLC + curl verified`** — Wi-Fi mode, ZoneMinder on `/stream`, VLC on `/video.mjpg`, `curl` to `/` and `/capture`.
 
 Network modes match the **HT-HC33 / HT-HD01** Arduino camera sketch (`ht-hc33-halow-camera.ino`): same `camera_build_config.h` layout, credentials, link maintenance, and stream error handling.
 
@@ -16,6 +20,13 @@ Edit **`main/camera_build_config.h`** before build (same layout as HT-HC33 Ardui
 | **0** | Stream-only (Get Still + Start Stream) |
 | **1** (default) | Full OV3660 panel (“Toggle OV3660 settings”) |
 
+| `STREAM_RTSP` | Live video protocol (pick **one** — better than running both) |
+|---------------|---------------------------------------------------------------------|
+| **0** (default) | **HTTP MJPEG** at `http://<ip>/stream` — browser; smoother on HaLow |
+| **1** | **RTSP** `rtsp://<ip>:8554/mjpeg/1` — VLC / ZoneMinder (RTP-over-TCP) |
+
+Port **80** web UI and `/capture` work in both modes. Only the live video path changes.
+
 Unlike the HT-HC33, the Xiao can also join OPENMANET HaLow mesh with Morse mm-iot — override SSID/passphrase at build time (see below).
 
 ## Troubleshooting: CMake / `managed_components` errors
@@ -27,7 +38,7 @@ If you see:
 the auto-downloaded components are incomplete (common after `idf.py fullclean`, iCloud sync, or Finder duplicate folders named `"... 2"`).
 
 ```bash
-cd xiao-halow-camera
+cd xiao-halow-camera-selectable
 source ./setenv.sh
 . ~/esp/esp-idf/export.sh
 ./repair_deps.sh
@@ -40,11 +51,11 @@ Avoid `idf.py fullclean` for normal rebuilds. Do not copy folders inside `manage
 
 **Edit this file only:**
 
-`xiao-halow-camera/main/camera_build_config.h`
+`main/camera_build_config.h`
 
 (not `ht-hc33-halow-camera_update/camera_build_config.h` — that is the Arduino sketch.)
 
-After save, run from `xiao-halow-camera/`:
+After save, run from the project root:
 
 ```bash
 idf.py build flash monitor
@@ -77,12 +88,12 @@ export MMIOT_ROOT=~/mm-iot-esp32
 
 ## Build and flash
 
-**Run all commands from the `xiao-halow-camera/` folder** (not the repo root — `idf.py` there will fail with “CMakeLists.txt not found”).
+**Run all commands from the project root** (where `CMakeLists.txt` lives).
 
 **`idf.py build` alone does not update the board.** You must **`flash`** after every change or the device keeps running the old firmware.
 
 ```bash
-cd xiao-halow-camera
+cd xiao-halow-camera-selectable
 source ./setenv.sh          # sets MMIOT_ROOT=~/mm-iot-esp32
 . ~/esp/esp-idf/export.sh
 idf.py set-target esp32s3
@@ -152,9 +163,45 @@ Open that URL from a device on the **same network** as the camera.
 - **HaLow stream**: CIF, moderate JPEG quality, ~5 fps cap, skip/slow down on send errors
 - **Wi-Fi stream**: VGA (not SVGA), ~12 fps cap — less stutter than maxing bandwidth
 - **Web UI**: edit `main/camera_build_config.h` (`ENABLE_OV3660_SETTINGS=0` stream-only, `=1` full panel). Serial log shows `Web UI: full OV3660 settings` or `stream-only` at boot.
-- **Stream**: MJPEG on port **81** (`/stream`); main page on port **80**
+- **Stream** (`STREAM_RTSP=0`): `http://<ip>/stream` (MJPEG on port **80**)
+- **Stream** (`STREAM_RTSP=1`): `rtsp://<ip>:8554/mjpeg/1` only — HTTP `/stream` disabled
 
-If video is still choppy, try one viewer tab, move closer to the AP, or use HaLow only for stills and Wi-Fi for live view.
+### VLC (HTTP MJPEG, `STREAM_RTSP 0`)
+
+Browsers and VLC use the same HTTP stream (non-chunked multipart for VLC compatibility):
+
+1. Use **`http://<camera-ip>/video.mjpg`** (not `/stream` — that path is for browsers)
+2. **Media → Open Network Stream** → paste the full URL including `http://`
+3. Command line: `vlc --demux=mjpeg "http://<camera-ip>/video.mjpg"`
+4. Confirm the PC running VLC can open `http://<camera-ip>/capture` in a browser first
+
+RTSP (`STREAM_RTSP 1`) is optional and usually slower than HTTP on this hardware.
+
+### ZoneMinder (recommended: HTTP MJPEG, not RTSP)
+
+RTSP on ESP32 is limited by the micro-rtsp stack (many small RTP-over-TCP packets per frame). **Use HTTP instead** — it is what works reliably on HaLow and Wi-Fi.
+
+1. Keep `STREAM_RTSP 0` in `main/camera_build_config.h`
+2. **Add Monitor** → **Source Type**: `Ffmpeg`
+3. **Source Path**: `http://<camera-ip>/stream`
+4. **Maximum FPS**: ~5 on HaLow, ~10 on Wi-Fi
+5. **Function**: `Monitor` or `Modect` as needed
+
+### VLC via RTSP (optional, often slow)
+
+Only if you need RTSP specifically: set `STREAM_RTSP 1`, flash, open `rtsp://<camera-ip>:8554/mjpeg/1`. Expect low FPS on HaLow; Wi-Fi is better but still slower than HTTP.
+
+If video is still choppy, try one viewer at a time, move closer to the AP, or lower ZoneMinder FPS.
+
+### Serial errors (what they mean)
+
+| Message | Cause | Fix |
+|---------|-------|-----|
+| `cam_hal: NO-SOI` | OV3660 needs a few frames after init | Harmless at boot; suppressed in newer builds |
+| `httpd_accept_conn: error in accept (23)` | Ran out of lwIP sockets | Use `STREAM_RTSP 0` **or** `1`, not both; close extra viewer tabs; run `idf.py reconfigure build flash` |
+| `stream ended (ESP_FAIL)` | HaLow link slow or viewer closed tab | Normal on weak link; use one stream tab |
+
+After changing `STREAM_RTSP` or `sdkconfig.defaults`, run **`idf.py reconfigure build flash`** so socket limits update.
 
 ## Hardware notes
 
