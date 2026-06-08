@@ -4,7 +4,13 @@ ESP-IDF **5.1.1** MJPEG camera server for the [Seeed Halo kit](https://wiki.seee
 
 **Build-time selectable:** HaLow or 2.4 GHz Wi-Fi; HTTP MJPEG (browser, ZoneMinder, VLC) or optional RTSP.
 
-Verified tag **`ZM + VLC + curl verified`** — Wi-Fi mode, ZoneMinder on `/stream`, VLC on `/video.mjpg`, `curl` to `/` and `/capture`.
+Release tag **`zm-vlc-curl-verified`** (*ZM + VLC + curl verified*) — Wi-Fi mode, ZoneMinder on `/stream`, VLC on `/video.mjpg`, `curl` to `/` and `/capture`.
+
+```bash
+git clone https://github.com/agflyguy/xiao-halow-camera-selectable.git
+cd xiao-halow-camera-selectable
+git checkout zm-vlc-curl-verified   # optional: exact tested release
+```
 
 Network modes match the **HT-HC33 / HT-HD01** Arduino camera sketch (`ht-hc33-halow-camera.ino`): same `camera_build_config.h` layout, credentials, link maintenance, and stream error handling.
 
