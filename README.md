@@ -28,10 +28,31 @@ Edit **`main/camera_build_config.h`** before build (same layout as HT-HC33 Ardui
 
 | `STREAM_RTSP` | Live video protocol (pick **one** — better than running both) |
 |---------------|---------------------------------------------------------------------|
-| **0** (default) | **HTTP MJPEG** at `http://<ip>/stream` — browser; smoother on HaLow |
+| **0** (default) | **HTTP MJPEG** — browser `/stream`; ZoneMinder/VLC on `/video.mjpg` |
 | **1** | **RTSP** `rtsp://<ip>:8554/mjpeg/1` — VLC / ZoneMinder (RTP-over-TCP) |
 
 Port **80** web UI and `/capture` work in both modes. Only the live video path changes.
+
+### Credentials (`main/camera_build_config.h`)
+
+| Define | When | Example |
+|--------|------|---------|
+| `WIFI_SSID` / `WIFI_PASSWORD` | `USE_WIFI 1` | `blue-2g` / `Dear!me2` |
+| `HALOW_SSID` / `HALOW_PASSPHRASE` / `HALOW_COUNTRY` | `USE_WIFI 0` | `gray-M` / `Dear!me2` / `US` |
+
+HaLow can still be overridden at build: `idf.py -DHALOW_SSID=grey-AP -DHALOW_PASSPHRASE=heltec.org build`
+
+### Camera defaults at boot
+
+| Define | Typical range | Notes |
+|--------|---------------|--------|
+| `CAM_VFLIP` | 0 or 1 | Vertical flip |
+| `CAM_HMIRROR` | 0 or 1 | Horizontal mirror |
+| `CAM_BRIGHTNESS` | -2 to 2 | |
+| `CAM_CONTRAST` | -2 to 2 | |
+| `CAM_SATURATION` | -2 to 2 | |
+
+With `ENABLE_OV3660_SETTINGS 1`, you can also adjust these live in the browser UI.
 
 Unlike the HT-HC33, the Xiao can also join OPENMANET HaLow mesh with Morse mm-iot — override SSID/passphrase at build time (see below).
 
@@ -163,13 +184,37 @@ Camera ready — http://192.168.x.x/
 
 Open that URL from a device on the **same network** as the camera.
 
+## Wi-Fi stream tuning (`main/camera_build_config.h`)
+
+If the live view is **choppy on 2.4 GHz Wi-Fi**, set:
+
+```c
+#define WIFI_STREAM_SMOOTH_MODE 1
+```
+
+**Smooth mode** (overrides manual tuning): **CIF** resolution, JPEG quality **22**, **~180 ms** between frames (~5–6 fps). Uses **3 PSRAM frame buffers** when PSRAM is available.
+
+Or tune manually with `WIFI_STREAM_SMOOTH_MODE 0`:
+
+| Setting | Smoother | Sharper (more bandwidth) |
+|---------|----------|---------------------------|
+| `WIFI_STREAM_QVGA` | **1** (320×240) | 0 (640×480 VGA) |
+| `WIFI_JPEG_QUALITY` | **16–18** | 10–14 |
+| `WIFI_FRAME_PERIOD_MS` | **100–120** | 80 |
+
+Also:
+
+- **`esp_wifi_set_ps(WIFI_PS_NONE)`** is enabled — required for stable MJPEG.
+- **One viewer at a time** — browser *or* VLC *or* ZoneMinder, not all three.
+- Move closer to the AP; weak RSSI causes stalls that look like choppiness.
+
 ## Behavior (aligned with HT-HC33)
 
-- **Link recovery** (both modes): background task stops the web server when the link drops, reconnects (HaLow: `mmwlan` re-join; Wi-Fi: auto-reconnect), then restarts HTTP when IP is back. Serial shows `[HaLow]` / `[Wi-Fi] link lost` and `link up`.
-- **HaLow stream**: CIF, moderate JPEG quality, ~5 fps cap, skip/slow down on send errors
-- **Wi-Fi stream**: VGA (not SVGA), ~12 fps cap — less stutter than maxing bandwidth
+- **Link recovery** (both modes): background task stops the web server when the link drops, reconnects (HaLow: `mmwlan` re-join; Wi-Fi: auto-reconnect with brief glitch debounce), then restarts HTTP when IP is back. Serial shows `[HaLow]` / `[Wi-Fi] link lost` and `link up`.
+- **HaLow stream**: CIF, moderate JPEG quality, ~5 fps cap, skip slow sends instead of killing the stream
+- **Wi-Fi stream**: smooth-mode CIF preset by default; PSRAM frame buffers when available
 - **Web UI**: edit `main/camera_build_config.h` (`ENABLE_OV3660_SETTINGS=0` stream-only, `=1` full panel). Serial log shows `Web UI: full OV3660 settings` or `stream-only` at boot.
-- **Stream** (`STREAM_RTSP=0`): `http://<ip>/stream` (MJPEG on port **80**)
+- **Stream** (`STREAM_RTSP=0`): ZoneMinder/VLC on `http://<ip>/video.mjpg`; browser on `http://<ip>/stream`
 - **Stream** (`STREAM_RTSP=1`): `rtsp://<ip>:8554/mjpeg/1` only — HTTP `/stream` disabled
 
 ### VLC (HTTP MJPEG, `STREAM_RTSP 0`)
@@ -189,9 +234,11 @@ RTSP on ESP32 is limited by the micro-rtsp stack (many small RTP-over-TCP packet
 
 1. Keep `STREAM_RTSP 0` in `main/camera_build_config.h`
 2. **Add Monitor** → **Source Type**: `Ffmpeg`
-3. **Source Path**: `http://<camera-ip>/stream`
-4. **Maximum FPS**: ~5 on HaLow, ~10 on Wi-Fi
+3. **Source Path**: `http://<camera-ip>/video.mjpg` (**recommended** — best output in testing)
+4. **Maximum FPS**: ~5 on HaLow, ~8 on Wi-Fi (with smooth mode)
 5. **Function**: `Monitor` or `Modect` as needed
+
+If `/video.mjpg` is unavailable, try `http://<camera-ip>/stream` as a fallback.
 
 ### VLC via RTSP (optional, often slow)
 

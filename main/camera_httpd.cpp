@@ -29,8 +29,16 @@
 #include "esp_log.h"
 
 #if USE_WIFI
-#define FRAME_PERIOD_MS 120
+#if WIFI_STREAM_SMOOTH_MODE
+#define FRAME_PERIOD_MS WIFI_SMOOTH_FRAME_PERIOD_MS
+#define FRAME_PERIOD_MAX_MS 400
+#else
+#ifndef WIFI_FRAME_PERIOD_MS
+#define WIFI_FRAME_PERIOD_MS 100
+#endif
+#define FRAME_PERIOD_MS WIFI_FRAME_PERIOD_MS
 #define FRAME_PERIOD_MAX_MS 250
+#endif
 #else
 #define FRAME_PERIOD_MS 320
 #define FRAME_PERIOD_MAX_MS 800
@@ -107,7 +115,7 @@ static bool s_http_running = false;
 
 static bool jpeg_has_soi(const uint8_t *buf, size_t len)
 {
-    return len >= 2 && buf[0] == 0xFF && buf[1] == 0xD8;
+    return buf && len >= 2 && buf[0] == 0xFF && buf[1] == 0xD8;
 }
 
 /* Avoid wedging httpd when esp_camera_fb_get() blocks — only a few sockets available. */
@@ -665,7 +673,11 @@ static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
             return res;
         }
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        httpd_resp_set_hdr(req, "X-Framerate", "60");
+#if USE_WIFI
+        httpd_resp_set_hdr(req, "X-Framerate", "10");
+#else
+        httpd_resp_set_hdr(req, "X-Framerate", "5");
+#endif
     } else {
         res = stream_begin_response(req);
         if (res != ESP_OK) {
@@ -852,29 +864,24 @@ static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
             vTaskDelay(pdMS_TO_TICKS(30));
             continue;
         }
-        if (res == ESP_OK) {
-            res = stream_send_frame(req, mode, &headers_sent, _jpg_buf, _jpg_buf_len, &_timestamp);
-        }
-        if (fb)
-        {
+        res = stream_send_frame(req, mode, &headers_sent, _jpg_buf, _jpg_buf_len, &_timestamp);
+        if (fb) {
             esp_camera_fb_return(fb);
             fb = NULL;
             _jpg_buf = NULL;
-        }
-        else if (_jpg_buf)
-        {
+        } else if (_jpg_buf) {
             free(_jpg_buf);
             _jpg_buf = NULL;
         }
 
-        if (res != ESP_OK)
-        {
+        if (res != ESP_OK) {
             if (stream_client_disconnected(res)) {
-                ESP_LOGI(TAG, "stream stopped (browser closed connection)");
-            } else {
-                ESP_LOGW(TAG, "stream ended (%s)", esp_err_to_name(res));
+                ESP_LOGI(TAG, "stream stopped (client closed)");
+                break;
             }
-            break;
+            ESP_LOGW(TAG, "stream send slow — skipping frame (%s)", esp_err_to_name(res));
+            vTaskDelay(pdMS_TO_TICKS(80));
+            continue;
         }
         int64_t fr_end = esp_timer_get_time();
 
@@ -888,10 +895,13 @@ static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
 
         int64_t frame_time = fr_end - last_frame;
         frame_time /= 1000;
-        ESP_LOGD(TAG, "MJPG: %uB %ums", (unsigned)(_jpg_buf_len), (unsigned)frame_time);
+        ESP_LOGD(TAG, "MJPG: %uB %ums (%.1ffps)",
+                 (uint32_t)(_jpg_buf_len),
+                 (uint32_t)frame_time,
+                 frame_time > 0 ? 1000.0f / (float)frame_time : 0.0f);
 
         int delay_ms = FRAME_PERIOD_MS;
-        if (frame_time > delay_ms) {
+        if (frame_time > (int64_t)delay_ms) {
             delay_ms = (int)frame_time + 40;
             if (delay_ms > FRAME_PERIOD_MAX_MS) {
                 delay_ms = FRAME_PERIOD_MAX_MS;
@@ -1352,9 +1362,15 @@ bool startCameraServer()
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 16;
+#if USE_WIFI
+    config.send_wait_timeout = 20;
+    config.recv_wait_timeout = 10;
+    config.stack_size = 14336;
+#else
     config.send_wait_timeout = 10;
     config.recv_wait_timeout = 5;
     config.stack_size = 12288;
+#endif
     config.lru_purge_enable = true;
 #if STREAM_RTSP
     config.max_open_sockets = 3;
@@ -1594,7 +1610,14 @@ extern "C" esp_err_t camera_http_init(void)
     printf("HTTP web UI: %s (ENABLE_OV3660_SETTINGS=%d)\n",
            ENABLE_OV3660_SETTINGS ? "full OV3660 settings panel" : "stream-only",
            ENABLE_OV3660_SETTINGS);
-#if STREAM_RTSP
+#if !STREAM_RTSP
+    printf("ZoneMinder: http://<ip>/video.mjpg\n");
+    printf("VLC:        http://<ip>/video.mjpg\n");
+    printf("Browser:    http://<ip>/stream\n");
+#if USE_WIFI
+    printf("Wi-Fi: one active stream client — close extra tabs/apps\n");
+#endif
+#else
     printf("HTTP MJPEG /stream disabled — live video is RTSP only\n");
 #endif
     return ESP_OK;

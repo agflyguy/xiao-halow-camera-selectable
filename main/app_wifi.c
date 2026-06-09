@@ -1,4 +1,5 @@
 #include "app_wifi.h"
+#include "camera_build_config.h"
 
 #include <string.h>
 
@@ -12,9 +13,7 @@
 
 static const char *TAG = "app_wifi";
 
-/* Same as HT-HC33 ht-hc33-halow-camera.ino (USE_WIFI 1) */
-static const char *WIFI_SSID = "blue-2g";
-static const char *WIFI_PASSWORD = "Dear!me2";
+/* Credentials from main/camera_build_config.h (same layout as HT-HC33) */
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1

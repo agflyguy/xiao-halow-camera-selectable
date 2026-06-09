@@ -4,6 +4,7 @@
  * Network mode and web UI: edit main/camera_build_config.h (not the HT-HC33 Arduino copy).
  */
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -18,11 +19,10 @@
 
 #include "esp_camera.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-static const char *TAG = "xiao_camera";
 
 #define CONFIG_XCLK_FREQ 20000000
 
@@ -49,6 +49,19 @@ static void camera_warmup(void)
     printf("Camera warmup: %d valid JPEG frame(s)\n", valid);
 }
 
+static void print_psram_status(void)
+{
+    size_t spiram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    size_t spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    printf("PSRAM heap caps: %" PRIu32 " KB total, %" PRIu32 " KB free\n",
+           (uint32_t)(spiram_total / 1024), (uint32_t)(spiram_free / 1024));
+    if (spiram_total > 0) {
+        printf("PSRAM OK — camera will use PSRAM frame buffers when USE_WIFI=1\n");
+    } else {
+        printf("PSRAM not active — stream uses DRAM only (choppier on Wi-Fi)\n");
+    }
+}
+
 static esp_err_t init_camera(void)
 {
     camera_config_t camera_config = {
@@ -72,25 +85,40 @@ static esp_err_t init_camera(void)
         .ledc_timer = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
         .pixel_format = PIXFORMAT_JPEG,
-#if USE_WIFI
-        .grab_mode = CAMERA_GRAB_LATEST,
-        .fb_count = 2,
-#else
         .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
         .fb_count = 1,
-#endif
-#if STREAM_RTSP
-        /* RTSP: smaller frames — micro-rtsp sends many RTP packets per JPEG */
-        .frame_size = FRAMESIZE_QQVGA,
-        .jpeg_quality = USE_WIFI ? 30 : 38,
-#elif USE_WIFI
-        .frame_size = FRAMESIZE_QVGA,
-        .jpeg_quality = 14,
-#else
-        .frame_size = FRAMESIZE_QVGA,
+        .frame_size = FRAMESIZE_CIF,
         .jpeg_quality = 18,
-#endif
+        .fb_location = CAMERA_FB_IN_DRAM,
     };
+
+#if STREAM_RTSP
+    /* RTSP: smaller frames — micro-rtsp sends many RTP packets per JPEG */
+    camera_config.grab_mode = CAMERA_GRAB_LATEST;
+    camera_config.fb_count = 2;
+    camera_config.frame_size = FRAMESIZE_QQVGA;
+    camera_config.jpeg_quality = USE_WIFI ? 30 : 38;
+    camera_config.fb_location = CAMERA_FB_IN_DRAM;
+#elif USE_WIFI
+    camera_config.grab_mode = CAMERA_GRAB_LATEST;
+    camera_config.fb_count = 3;
+#if WIFI_STREAM_SMOOTH_MODE
+    camera_config.frame_size = FRAMESIZE_CIF;
+    camera_config.jpeg_quality = WIFI_SMOOTH_JPEG_QUALITY;
+#else
+    camera_config.frame_size = WIFI_STREAM_QVGA ? FRAMESIZE_QVGA : FRAMESIZE_VGA;
+    camera_config.jpeg_quality = WIFI_JPEG_QUALITY;
+#endif
+    camera_config.fb_location = (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0)
+                                    ? CAMERA_FB_IN_PSRAM
+                                    : CAMERA_FB_IN_DRAM;
+#else
+    camera_config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+    camera_config.fb_count = 1;
+    camera_config.frame_size = FRAMESIZE_CIF;
+    camera_config.jpeg_quality = 18;
+    camera_config.fb_location = CAMERA_FB_IN_DRAM;
+#endif
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK) {
         return err;
@@ -102,12 +130,31 @@ static esp_err_t init_camera(void)
 
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
-        s->set_vflip(s, 1);
-        s->set_brightness(s, 1);
-        s->set_saturation(s, 0);
+        s->set_vflip(s, CAM_VFLIP);
+        s->set_hmirror(s, CAM_HMIRROR);
+        s->set_brightness(s, CAM_BRIGHTNESS);
+        s->set_contrast(s, CAM_CONTRAST);
+        s->set_saturation(s, CAM_SATURATION);
     }
 
     camera_warmup();
+
+#if USE_WIFI && !STREAM_RTSP
+#if WIFI_STREAM_SMOOTH_MODE
+    printf("Wi-Fi camera: SMOOTH MODE — CIF, JPEG %d, ~%d ms/frame\n",
+           WIFI_SMOOTH_JPEG_QUALITY, WIFI_SMOOTH_FRAME_PERIOD_MS);
+#else
+    printf("Wi-Fi camera: %s JPEG quality %d, %d ms/frame cap\n",
+           WIFI_STREAM_QVGA ? "QVGA" : "VGA", WIFI_JPEG_QUALITY, WIFI_FRAME_PERIOD_MS);
+#endif
+    if (camera_config.fb_location == CAMERA_FB_IN_PSRAM) {
+        printf("Wi-Fi: frame buffers in PSRAM\n");
+    } else {
+        printf("Wi-Fi: frame buffers in DRAM (PSRAM not available)\n");
+    }
+#elif !USE_WIFI && !STREAM_RTSP
+    printf("HaLow camera: CIF\n");
+#endif
     return ESP_OK;
 }
 
@@ -130,8 +177,9 @@ static void print_ready(void)
         printf("Live stream (RTSP) — rtsp://%s:8554/mjpeg/1\n", ip);
         printf("  VLC / ZoneMinder: RTSP URL above (server uses RTP-over-TCP)\n");
 #else
-        printf("Live stream (HTTP) — http://%s/stream\n", ip);
-        printf("VLC / ffmpeg — http://%s/video.mjpg\n", ip);
+        printf("ZoneMinder: http://%s/video.mjpg\n", ip);
+        printf("VLC:        http://%s/video.mjpg\n", ip);
+        printf("Browser:    http://%s/stream\n", ip);
 #endif
         print_ov3660_ui_mode();
         printf("\n");
@@ -143,8 +191,9 @@ static void print_ready(void)
         printf("Live stream (RTSP) — rtsp://%s:8554/mjpeg/1\n", ip);
         printf("  VLC / ZoneMinder: RTSP URL above (server uses RTP-over-TCP)\n");
 #else
-        printf("Live stream (HTTP) — http://%s/stream\n", ip);
-        printf("VLC / ffmpeg — http://%s/video.mjpg\n", ip);
+        printf("ZoneMinder: http://%s/video.mjpg\n", ip);
+        printf("VLC:        http://%s/video.mjpg\n", ip);
+        printf("Browser:    http://%s/stream\n", ip);
 #endif
         print_ov3660_ui_mode();
         printf("\n");
@@ -192,10 +241,20 @@ static void network_link_task(void *arg)
 {
     (void)arg;
     bool link_was_up = false;
+#if USE_WIFI
+    uint8_t down_streak = 0;
+#endif
 
     while (true) {
 #if USE_WIFI
         bool link_up = app_wifi_link_is_up();
+        if (link_up) {
+            down_streak = 0;
+        } else if (down_streak < 2) {
+            down_streak++;
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
 #else
         bool link_up = app_wlan_link_is_up();
 #endif
@@ -261,6 +320,8 @@ void app_main(void)
     printf(" Web UI: stream-only (no settings panel)\n");
 #endif
     printf("========================================\n\n");
+
+    print_psram_status();
 
 #if USE_WIFI
     if (!app_wifi_connect()) {
