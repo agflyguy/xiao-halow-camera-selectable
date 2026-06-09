@@ -27,6 +27,7 @@ unset(ENABLE_OV3660_SETTINGS CACHE)
 unset(STREAM_RTSP CACHE)
 
 set(src
+    "app_log.c"
     "mm_app_loadconfig.c"
     "mm_app_common.c"
     "camera_httpd.cpp"

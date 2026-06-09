@@ -1,4 +1,5 @@
 #include "app_wifi.h"
+#include "app_log.h"
 #include "camera_build_config.h"
 
 #include <string.h>
@@ -6,6 +7,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_sntp.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -20,6 +22,18 @@ static const char *TAG = "app_wifi";
 
 static EventGroupHandle_t s_wifi_events;
 static char ip_addr_str[16];
+static bool s_sntp_started;
+
+static void wifi_start_sntp_once(void)
+{
+    if (s_sntp_started) {
+        return;
+    }
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+    s_sntp_started = true;
+}
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id,
                                void *event_data)
@@ -29,12 +43,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
         ip_addr_str[0] = '\0';
-        printf("[Wi-Fi] disconnected — reconnecting...\n");
+        app_log_printf("[Wi-Fi] disconnected — reconnecting...\n");
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         snprintf(ip_addr_str, sizeof(ip_addr_str), IPSTR, IP2STR(&event->ip_info.ip));
         ESP_LOGI(TAG, "IP: %s", ip_addr_str);
+        wifi_start_sntp_once();
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
     }
 }
