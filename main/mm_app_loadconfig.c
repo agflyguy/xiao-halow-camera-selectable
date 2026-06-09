@@ -9,8 +9,9 @@
 #include "mmosal.h"
 #include "mm_app_loadconfig.h"
 #include "mmwlan_regdb.def"
+#include "camera_build_config.h"
 
-#define COUNTRY_CODE "US"
+#define COUNTRY_CODE HALOW_COUNTRY
 #ifndef COUNTRY_CODE
 #error COUNTRY_CODE must be defined to the appropriate 2 character country code.
 #endif
@@ -25,18 +26,14 @@
  */
 #ifdef APP_HALOW_SSID
 #define DEFAULT_HALOW_SSID APP_HALOW_SSID
-#elif defined(OPENMANET_MESH)
-#define DEFAULT_HALOW_SSID "gray-M"
 #else
-#define DEFAULT_HALOW_SSID "gray-M"
+#define DEFAULT_HALOW_SSID HALOW_SSID
 #endif
 
 #ifdef APP_HALOW_PASSPHRASE
 #define DEFAULT_HALOW_PASSPHRASE APP_HALOW_PASSPHRASE
-#elif defined(OPENMANET_MESH)
-#define DEFAULT_HALOW_PASSPHRASE "gray-M"
 #else
-#define DEFAULT_HALOW_PASSPHRASE "change-me"
+#define DEFAULT_HALOW_PASSPHRASE HALOW_PASSPHRASE
 #endif
 
 #ifndef SECURITY_TYPE
