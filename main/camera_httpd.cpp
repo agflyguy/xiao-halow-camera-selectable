@@ -24,6 +24,7 @@
 #include "camera_index.h"
 #include "camera_build_config.h"
 #include "camera_http.h"
+#include "app_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -417,7 +418,7 @@ static esp_err_t capture_handler(httpd_req_t *req)
 
     if (!fb) {
         ESP_LOGE(TAG, "Camera capture timed out");
-        printf("capture failed (timeout) — check camera / Wi-Fi\n");
+        app_log_printf("capture failed (timeout) — check camera / Wi-Fi\n");
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
@@ -666,6 +667,7 @@ static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
 #endif
 
     int64_t last_frame = esp_timer_get_time();
+    const char *stream_path = (mode == STREAM_HTTP_RAW) ? "/video.mjpg" : "/stream";
 
     if (mode == STREAM_HTTP_CHUNKED) {
         res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
@@ -684,8 +686,9 @@ static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
             return res;
         }
         headers_sent = true;
-        printf("MJPEG client connected (VLC/ffmpeg) — use http://<ip>/video.mjpg\n");
     }
+
+    app_log_printf("HTTP stream started (%s)\n", stream_path);
 
 #ifdef CONFIG_LED_ILLUMINATOR_ENABLED
     enable_led(true);
@@ -876,7 +879,7 @@ static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
 
         if (res != ESP_OK) {
             if (stream_client_disconnected(res)) {
-                ESP_LOGI(TAG, "stream stopped (client closed)");
+                app_log_printf("HTTP stream stopped (%s, client closed)\n", stream_path);
                 break;
             }
             ESP_LOGW(TAG, "stream send slow — skipping frame (%s)", esp_err_to_name(res));
@@ -919,6 +922,7 @@ static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
     if (stream_client_disconnected(res)) {
         return ESP_OK;
     }
+    app_log_printf("HTTP stream ended (%s, %s)\n", stream_path, esp_err_to_name(res));
     return res;
 }
 

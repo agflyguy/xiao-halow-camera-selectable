@@ -11,6 +11,7 @@
 #include "mmosal.h"
 #include "mm_app_common.h"
 #include "app_wifi.h"
+#include "app_log.h"
 #include "camera_http.h"
 #include "camera_build_config.h"
 #if STREAM_RTSP
@@ -212,7 +213,7 @@ static void restart_streaming_services(void)
     if (ok) {
         print_ready();
     } else {
-        printf("Streaming services failed to restart — retry after IP appears\n");
+        app_log_printf("Streaming services failed to restart — retry after IP appears\n");
     }
 }
 
@@ -262,9 +263,9 @@ static void network_link_task(void *arg)
         if (link_up) {
             if (!streaming_services_running()) {
 #if USE_WIFI
-                printf("[Wi-Fi] link up — starting streaming services\n");
+                app_log_printf("[Wi-Fi] link up — starting streaming services\n");
 #else
-                printf("[HaLow] link up — starting streaming services\n");
+                app_log_printf("[HaLow] link up — starting streaming services\n");
 #endif
                 restart_streaming_services();
             }
@@ -272,9 +273,9 @@ static void network_link_task(void *arg)
         } else {
             if (link_was_up || streaming_services_running()) {
 #if USE_WIFI
-                printf("[Wi-Fi] link lost — stopping streaming services\n");
+                app_log_printf("[Wi-Fi] link lost — stopping streaming services\n");
 #else
-                printf("[HaLow] link lost — stopping streaming services\n");
+                app_log_printf("[HaLow] link lost — stopping streaming services\n");
 #endif
                 stop_streaming_services();
                 link_was_up = false;

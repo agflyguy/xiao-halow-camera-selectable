@@ -9,6 +9,7 @@
 #include "camera_build_config.h"
 
 extern "C" {
+#include "app_log.h"
 #include "app_wifi.h"
 #include "mm_app_common.h"
 }
@@ -122,7 +123,7 @@ static void rtsp_task(void *arg)
             session->handleRequests(0);
 
             if (session->m_stopped) {
-                ESP_LOGI(TAG, "RTSP client disconnected");
+                app_log_printf("RTSP client disconnected\n");
                 delete session;
                 delete streamer;
                 session = nullptr;
@@ -149,8 +150,8 @@ static void rtsp_task(void *arg)
                     snprintf(ip, sizeof(ip), "0.0.0.0");
                 }
 
-                ESP_LOGI(TAG, "RTSP client connected — rtsp://%s:%d/%s/%s", ip, RTSP_PORT,
-                         RTSP_PATH_PRESENTATION, RTSP_PATH_STREAM);
+                app_log_printf("RTSP client connected — rtsp://%s:%d/%s/%s\n", ip, RTSP_PORT,
+                               RTSP_PATH_PRESENTATION, RTSP_PATH_STREAM);
 
                 char hostport[64];
                 snprintf(hostport, sizeof(hostport), "%s:%d", ip, RTSP_PORT);
