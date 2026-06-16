@@ -181,6 +181,7 @@ static void print_ready(void)
         printf("ZoneMinder: http://%s/video.mjpg\n", ip);
         printf("VLC:        http://%s/video.mjpg\n", ip);
         printf("Browser:    http://%s/stream\n", ip);
+        printf("Test:       curl http://%s/ping\n", ip);
 #endif
         print_ov3660_ui_mode();
         printf("\n");
@@ -195,6 +196,7 @@ static void print_ready(void)
         printf("ZoneMinder: http://%s/video.mjpg\n", ip);
         printf("VLC:        http://%s/video.mjpg\n", ip);
         printf("Browser:    http://%s/stream\n", ip);
+        printf("Test:       curl http://%s/ping\n", ip);
 #endif
         print_ov3660_ui_mode();
         printf("\n");
@@ -237,18 +239,53 @@ static bool streaming_services_running(void)
 #endif
 }
 
-/* Same pattern as HT-HC33 maintainHaLowLink(): stop HTTP when down, restart when up */
+static void print_network_status(void)
+{
+    char ip[48];
+#if USE_WIFI
+    bool link_up = app_wifi_link_is_up();
+    bool have_ip = app_wifi_get_ip_addr(ip, sizeof(ip));
+#else
+    bool link_up = app_wlan_link_is_up();
+    bool have_ip = app_wlan_has_ip();
+    if (have_ip) {
+        (void)app_wlan_get_ip_addr(ip, sizeof(ip));
+    }
+#endif
+    bool http_on = camera_http_is_running();
+
+    if (have_ip) {
+        app_log_printf("[status] link=%s HTTP=%s IP=%s\n",
+                       link_up ? "UP" : "DOWN",
+                       http_on ? "ON" : "OFF",
+                       ip);
+        if (!http_on) {
+            app_log_printf("[status] HTTP is OFF — curl will timeout. Wait for link up or reset.\n");
+        }
+    } else {
+        app_log_printf("[status] link=DOWN HTTP=%s IP=(none)\n",
+                       http_on ? "ON" : "OFF");
+    }
+}
+
+/*
+ * Wi-Fi: stop HTTP when link drops, restart when back (with brief glitch debounce).
+ * HaLow: keep HTTP running — mmipal can report "down" while ping still works; stopping
+ * httpd left curl timing out with 0 bytes. Reconnect once per outage, not every 2 s.
+ */
 static void network_link_task(void *arg)
 {
     (void)arg;
     bool link_was_up = false;
-#if USE_WIFI
     uint8_t down_streak = 0;
-#endif
+    uint8_t status_ticks = 0;
 
     while (true) {
 #if USE_WIFI
         bool link_up = app_wifi_link_is_up();
+#else
+        bool link_up = app_wlan_link_is_up();
+#endif
         if (link_up) {
             down_streak = 0;
         } else if (down_streak < 2) {
@@ -256,9 +293,6 @@ static void network_link_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
         }
-#else
-        bool link_up = app_wlan_link_is_up();
-#endif
 
         if (link_up) {
             if (!streaming_services_running()) {
@@ -271,18 +305,28 @@ static void network_link_task(void *arg)
             }
             link_was_up = true;
         } else {
-            if (link_was_up || streaming_services_running()) {
 #if USE_WIFI
+            if (link_was_up || streaming_services_running()) {
                 app_log_printf("[Wi-Fi] link lost — stopping streaming services\n");
-#else
-                app_log_printf("[HaLow] link lost — stopping streaming services\n");
-#endif
                 stop_streaming_services();
-                link_was_up = false;
             }
-#if !USE_WIFI
-            if (!link_up && app_wlan_reconnect()) {
-                app_wlan_print_addresses();
+            link_was_up = false;
+#else
+            if (!streaming_services_running() && app_wlan_has_ip()) {
+                char ip[48];
+                if (app_wlan_get_ip_addr(ip, sizeof(ip))) {
+                    app_log_printf("[HaLow] web server off — restarting (IP %s)\n", ip);
+                } else {
+                    app_log_printf("[HaLow] web server off — restarting\n");
+                }
+                restart_streaming_services();
+            }
+            if (link_was_up && !app_wlan_has_ip()) {
+                app_log_printf("[HaLow] link lost — reconnecting (HTTP stays up)\n");
+                link_was_up = false;
+                if (app_wlan_reconnect()) {
+                    app_wlan_print_addresses();
+                }
             }
 #endif
         }
@@ -290,6 +334,10 @@ static void network_link_task(void *arg)
 #if !USE_WIFI
         app_wlan_arp_send();
 #endif
+        if (++status_ticks >= 30) {
+            status_ticks = 0;
+            print_network_status();
+        }
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
@@ -360,6 +408,7 @@ void app_main(void)
     }
 #endif
     print_ready();
+    print_network_status();
 
     xTaskCreate(network_link_task, "net_link", 4096, NULL, 5, NULL);
 }

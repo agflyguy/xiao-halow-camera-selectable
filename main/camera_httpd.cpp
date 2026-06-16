@@ -342,6 +342,14 @@ static esp_err_t favicon_handler(httpd_req_t *req)
     return httpd_resp_send(req, NULL, 0);
 }
 
+static esp_err_t ping_handler(httpd_req_t *req)
+{
+    app_log_printf("HTTP GET /ping\n");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t bmp_handler(httpd_req_t *req)
 {
     camera_fb_t *fb = NULL;
@@ -401,6 +409,7 @@ static size_t jpg_encode_stream(void *arg, size_t index, const void *data, size_
 
 static esp_err_t capture_handler(httpd_req_t *req)
 {
+    app_log_printf("HTTP GET /capture\n");
     camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
 #if ARDUHAL_LOG_LEVEL >= ARDUHAL_LOG_LEVEL_INFO
@@ -637,8 +646,45 @@ static esp_err_t stream_send_frame(httpd_req_t *req, stream_http_mode_t mode, bo
     return res;
 }
 
+#if !USE_WIFI
+static bool s_halow_stream_active = false;
+
+class HaLowStreamGuard {
+public:
+    HaLowStreamGuard()
+    {
+        if (s_halow_stream_active) {
+            rejected_ = true;
+            return;
+        }
+        s_halow_stream_active = true;
+        active_ = true;
+    }
+    ~HaLowStreamGuard()
+    {
+        if (active_) {
+            s_halow_stream_active = false;
+        }
+    }
+    bool rejected() const { return rejected_; }
+
+private:
+    bool active_ = false;
+    bool rejected_ = false;
+};
+#endif
+
 static esp_err_t stream_handler_impl(httpd_req_t *req, stream_http_mode_t mode)
 {
+#if !USE_WIFI
+    HaLowStreamGuard stream_guard;
+    if (stream_guard.rejected()) {
+        app_log_printf("HTTP stream rejected — one HaLow client at a time\n");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_send(req, "Stream busy", HTTPD_RESP_USE_STRLEN);
+    }
+#endif
     camera_fb_t *fb = NULL;
     struct timeval _timestamp;
     esp_err_t res = ESP_OK;
@@ -1378,8 +1424,14 @@ bool startCameraServer()
     config.lru_purge_enable = true;
 #if STREAM_RTSP
     config.max_open_sockets = 3;
-#else
+#elif USE_WIFI
     config.max_open_sockets = 7;
+#else
+    /* Must be <= CONFIG_LWIP_MAX_SOCKETS - 3 (httpd listen + UDP control sockets). */
+    {
+        uint16_t n = (uint16_t)(CONFIG_LWIP_MAX_SOCKETS - 3);
+        config.max_open_sockets = (n > 10) ? 10 : n;
+    }
 #endif
     config.core_id = tskNO_AFFINITY;
 
@@ -1387,6 +1439,19 @@ bool startCameraServer()
         .uri = "/favicon.ico",
         .method = HTTP_GET,
         .handler = favicon_handler,
+        .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+        ,
+        .is_websocket = true,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = NULL
+#endif
+    };
+
+    httpd_uri_t ping_uri = {
+        .uri = "/ping",
+        .method = HTTP_GET,
+        .handler = ping_handler,
         .user_ctx = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
         ,
@@ -1567,6 +1632,7 @@ bool startCameraServer()
     {
         httpd_register_uri_handler(camera_httpd, &index_uri);
         httpd_register_uri_handler(camera_httpd, &favicon_uri);
+        httpd_register_uri_handler(camera_httpd, &ping_uri);
 #if ENABLE_OV3660_SETTINGS
         httpd_register_uri_handler(camera_httpd, &cmd_uri);
         httpd_register_uri_handler(camera_httpd, &status_uri);
@@ -1609,15 +1675,19 @@ extern "C" esp_err_t camera_http_init(void)
         return ESP_FAIL;
     }
     s_http_running = true;
-    ESP_LOGI(TAG, "HTTP servers started — web UI: %s",
-             ENABLE_OV3660_SETTINGS ? "full OV3660 settings" : "stream-only");
-    printf("HTTP web UI: %s (ENABLE_OV3660_SETTINGS=%d)\n",
+    printf("HTTP servers started — web UI: %s (ENABLE_OV3660_SETTINGS=%d)\n",
            ENABLE_OV3660_SETTINGS ? "full OV3660 settings panel" : "stream-only",
            ENABLE_OV3660_SETTINGS);
+    ESP_LOGI(TAG, "HTTP servers started — web UI: %s",
+             ENABLE_OV3660_SETTINGS ? "full OV3660 settings" : "stream-only");
 #if !STREAM_RTSP
     printf("ZoneMinder: http://<ip>/video.mjpg\n");
     printf("VLC:        http://<ip>/video.mjpg\n");
     printf("Browser:    http://<ip>/stream\n");
+    printf("Test:       curl http://<ip>/ping\n");
+#if !USE_WIFI
+    printf("HaLow: stop ZM before browser test, or curl while ZM is off\n");
+#endif
 #if USE_WIFI
     printf("Wi-Fi: one active stream client — close extra tabs/apps\n");
 #endif
@@ -1634,7 +1704,7 @@ extern "C" void camera_http_stop(void)
     }
     stopCameraServer();
     s_http_running = false;
-    ESP_LOGI(TAG, "HTTP servers stopped");
+    printf("HTTP server STOPPED\n");
 }
 
 extern "C" bool camera_http_is_running(void)

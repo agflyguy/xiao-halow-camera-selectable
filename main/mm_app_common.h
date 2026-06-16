@@ -21,5 +21,7 @@ void app_wlan_print_scan(void);
 bool app_wlan_reconnect(void);
 
 bool app_wlan_link_is_up(void);
+/** True if an IP was assigned (may still respond to ping after a brief mmipal down event). */
+bool app_wlan_has_ip(void);
 bool app_wlan_get_ip_addr(char *buf, unsigned buf_len);
 void app_wlan_print_addresses(void);

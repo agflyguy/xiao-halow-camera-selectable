@@ -10,6 +10,8 @@
 #include "mmwlan.h"
 #include "mmipal.h"
 #include "lwip/ip_addr.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "mm_app_common.h"
 #include "mm_app_loadconfig.h"
 
@@ -54,9 +56,8 @@ static void link_status_callback(const struct mmipal_link_status *link_status)
         mmosal_semb_give(link_established);
         app_wlan_arp_send();
     } else {
-        printf("[HaLow] link down (%lu ms) — web server will stop\n", (unsigned long)time_ms);
+        printf("[HaLow] link down (%lu ms)\n", (unsigned long)time_ms);
         link_up = false;
-        ip_addr_str[0] = '\0';
         if (link_established) {
             while (mmosal_semb_wait(link_established, 0)) {
             }
@@ -106,7 +107,7 @@ static struct mmosal_semb *scan_done;
 static bool target_ssid_seen;
 static bool prescan_done;
 
-#define SCAN_MAX_UNIQUE 16
+#define SCAN_MAX_UNIQUE 32
 
 typedef struct {
     char ssid[MMWLAN_SSID_MAXLEN + 1];
@@ -210,6 +211,10 @@ void app_wlan_print_scan(void)
 {
     const char *target = load_halow_ssid_default();
 
+    /* Scan with STA off — join/reconnect while associated can miss APs. */
+    (void)mmwlan_sta_disable();
+    vTaskDelay(pdMS_TO_TICKS(800));
+
     scan_reset(target);
     if (scan_done == NULL) {
         scan_done = mmosal_semb_create("scan_done");
@@ -227,7 +232,7 @@ void app_wlan_print_scan(void)
         return;
     }
 
-    mmosal_semb_wait(scan_done, 30000);
+    mmosal_semb_wait(scan_done, 45000);
 
     scan_print_results();
 
@@ -308,9 +313,14 @@ bool app_wlan_link_is_up(void)
     return link_up && ip_addr_str[0] != '\0';
 }
 
+bool app_wlan_has_ip(void)
+{
+    return ip_addr_str[0] != '\0' && ip_addr_u32 != 0;
+}
+
 bool app_wlan_get_ip_addr(char *buf, unsigned buf_len)
 {
-    if (!app_wlan_link_is_up() || buf_len == 0) {
+    if (buf_len == 0 || ip_addr_str[0] == '\0') {
         return false;
     }
     (void)mmosal_safer_strcpy(buf, ip_addr_str, buf_len);
