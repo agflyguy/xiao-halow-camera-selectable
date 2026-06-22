@@ -28,6 +28,7 @@ unset(STREAM_RTSP CACHE)
 
 set(src
     "app_log.c"
+    "camera_heartbeat.c"
     "mm_app_loadconfig.c"
     "mm_app_common.c"
     "camera_httpd.cpp"
@@ -51,7 +52,7 @@ idf_component_register(SRCS ${src}
                        PRIV_REQUIRES ${priv_requires})
 
 # Recompile main + httpd when the header changes. Flags come from #include, not -D.
-set(_object_depends main.c camera_httpd.cpp)
+set(_object_depends main.c camera_httpd.cpp camera_heartbeat.c)
 if(STREAM_RTSP)
     list(APPEND _object_depends camera_rtsp.cpp EspCameraStreamer.cpp)
 endif()

@@ -8,6 +8,10 @@
 
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void app_wlan_init(void);
 /** @return false if join timed out (does not assert). */
 bool app_wlan_start(void);
@@ -25,3 +29,7 @@ bool app_wlan_link_is_up(void);
 bool app_wlan_has_ip(void);
 bool app_wlan_get_ip_addr(char *buf, unsigned buf_len);
 void app_wlan_print_addresses(void);
+
+#ifdef __cplusplus
+}
+#endif

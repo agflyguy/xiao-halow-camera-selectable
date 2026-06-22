@@ -26,6 +26,21 @@ Edit **`main/camera_build_config.h`** before build (same layout as HT-HC33 Ardui
 | **0** | Stream-only (Get Still + Start Stream) |
 | **1** (default) | Full OV3660 panel (“Toggle OV3660 settings”) |
 
+| Define | When | Example |
+|--------|------|---------|
+| `CAMERA_TITLE` | Always | `garage-cam` — browser tab, web UI banner, serial log |
+| `USE_STATIC_IP` | Always | `0` = DHCP, `1` = use `STATIC_*` below |
+| `STATIC_IP` | `USE_STATIC_IP 1` | Unique per camera on mesh, e.g. `10.41.0.160` (gray) |
+| `STATIC_GATEWAY` / `STATIC_NETMASK` / `STATIC_DNS1` / `STATIC_DNS2` | `USE_STATIC_IP 1` | Gateway/DNS **`10.41.0.4`** (brown); netmask `255.255.0.0` — see `haven-gateway/docs/NODE-IPS.md` |
+
+Web UI loads title and IP from `GET /camera_info` JSON.
+
+| Define | When | Example |
+|--------|------|---------|
+| `ENABLE_HEARTBEAT_LED` | Always | `1` = user LED blinks after stable link |
+| `HEARTBEAT_LED_GPIO` | `ENABLE_HEARTBEAT_LED 1` | `21` (XIAO ESP32-S3 Sense) |
+| `HEARTBEAT_STABLE_MS` | `ENABLE_HEARTBEAT_LED 1` | `5000` — wait before first blink |
+
 | `STREAM_RTSP` | Live video protocol (pick **one** — better than running both) |
 |---------------|---------------------------------------------------------------------|
 | **0** (default) | **HTTP MJPEG** — browser `/stream`; ZoneMinder/VLC on `/video.mjpg` |
@@ -73,6 +88,51 @@ idf.py build flash monitor
 ```
 
 Avoid `idf.py fullclean` for normal rebuilds. Do not copy folders inside `managed_components/`.
+
+## Troubleshooting: serial port busy
+
+Flash or monitor fails with:
+
+```text
+Could not exclusively lock port /dev/cu.usbserial-0001
+[Errno 35] Resource temporarily unavailable
+```
+
+**Cause:** another process already has the USB serial port open. This is **not** a browser issue. Common holders:
+
+| Process | Typical source |
+|---------|----------------|
+| `esp_idf_monitor` / `idf.py monitor` | This project's terminal left running after `idf.py flash monitor` |
+| `pio device monitor` | HT-HC33 PlatformIO monitor (same or another Cursor tab) |
+| Arduino IDE **Serial Monitor** | Same port selected |
+| Cursor / VS Code **Serial Monitor** panel | Open on that port |
+
+**Same cable, different board:** XIAO and HT-HC33 often share the same `/dev/cu.usbserial-0001` when you swap boards on one cable. Stop the monitor for the *other* camera before flashing.
+
+### Fix
+
+1. **Stop the monitor** — `Ctrl+C` in any terminal running `idf.py monitor` or `pio device monitor`.
+2. **Find what holds the port:**
+
+   ```bash
+   lsof /dev/cu.usbserial-0001
+   ```
+
+3. **Release it** (use PID from `lsof`):
+
+   ```bash
+   kill <PID>
+   ```
+
+4. **Flash, then monitor** — do not run `idf.py build flash monitor` as one chained command if upload keeps failing; flash first:
+
+   ```bash
+   idf.py -p /dev/cu.usbserial-0001 flash
+   # wait for SUCCESS, then:
+   idf.py -p /dev/cu.usbserial-0001 monitor
+   ```
+
+5. If still stuck: unplug USB, wait 2 s, replug; close Arduino IDE; retry `lsof`.
 
 ## Troubleshooting: `camera_build_config.h` not updating
 
@@ -175,11 +235,11 @@ Serial monitor prints the assigned IP and URL, for example:
 ```
 ========================================
  XIAO camera — HaLow mode (classic AP)
- IP address:  192.168.x.x
- Camera URL:  http://192.168.x.x/
+ IP address:  10.41.x.x
+ Camera URL:  http://10.41.x.x/
 ========================================
 
-Camera ready — http://192.168.x.x/
+Camera ready — http://10.41.x.x/
 ```
 
 Open that URL from a device on the **same network** as the camera.

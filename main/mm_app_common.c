@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 #include "mm_app_common.h"
 #include "mm_app_loadconfig.h"
+#include "camera_build_config.h"
 
 static struct mmosal_semb *link_established;
 static bool link_up;
@@ -359,7 +360,7 @@ void app_wlan_print_addresses(void)
         return;
     }
     printf("\n========================================\n");
-    printf(" XIAO camera — HaLow mode (classic AP)\n");
+    printf(" %s — HaLow mode (classic AP)\n", CAMERA_TITLE);
     printf(" IP address:  %s\n", ip_addr_str);
     printf(" Netmask:     %s\n", netmask_str);
     printf(" Gateway:     %s\n", gateway_str);

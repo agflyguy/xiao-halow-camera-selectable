@@ -24,6 +24,29 @@ static EventGroupHandle_t s_wifi_events;
 static char ip_addr_str[16];
 static bool s_sntp_started;
 
+#if USE_STATIC_IP
+static bool wifi_apply_static_ip(esp_netif_t *netif)
+{
+    esp_netif_ip_info_t info = {};
+    esp_ip4_addr_t dns = {};
+
+    if (esp_netif_str_to_ip4(STATIC_IP, &info.ip) != ESP_OK ||
+        esp_netif_str_to_ip4(STATIC_GATEWAY, &info.gw) != ESP_OK ||
+        esp_netif_str_to_ip4(STATIC_NETMASK, &info.netmask) != ESP_OK) {
+        printf("Static IP: bad STATIC_* in camera_build_config.h\n");
+        return false;
+    }
+    ESP_ERROR_CHECK(esp_netif_dhcpc_stop(netif));
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(netif, &info));
+    if (esp_netif_str_to_ip4(STATIC_DNS1, &dns) == ESP_OK && dns.addr != 0) {
+        esp_netif_dns_info_t dns_info = { .ip = { .type = ESP_IPADDR_TYPE_V4, .u_ip.ip4 = dns } };
+        ESP_ERROR_CHECK(esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns_info));
+    }
+    printf("IPv4: static %s gw %s\n", STATIC_IP, STATIC_GATEWAY);
+    return true;
+}
+#endif
+
 static void wifi_start_sntp_once(void)
 {
     if (s_sntp_started) {
@@ -45,6 +68,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         ip_addr_str[0] = '\0';
         app_log_printf("[Wi-Fi] disconnected — reconnecting...\n");
         esp_wifi_connect();
+#if USE_STATIC_IP
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        snprintf(ip_addr_str, sizeof(ip_addr_str), STATIC_IP);
+        ESP_LOGI(TAG, "IP: %s (static)", ip_addr_str);
+        wifi_start_sntp_once();
+        xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
+#endif
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         snprintf(ip_addr_str, sizeof(ip_addr_str), IPSTR, IP2STR(&event->ip_info.ip));
@@ -66,7 +96,7 @@ bool app_wifi_connect(void)
     s_wifi_events = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -81,6 +111,13 @@ bool app_wifi_connect(void)
     strncpy((char *)wifi_config.sta.password, WIFI_PASSWORD, sizeof(wifi_config.sta.password) - 1);
 
     printf("Wi-Fi AP: \"%s\"\n", WIFI_SSID);
+#if USE_STATIC_IP
+    if (!wifi_apply_static_ip(sta_netif)) {
+        return false;
+    }
+#else
+    printf("IPv4: DHCP\n");
+#endif
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -118,7 +155,7 @@ void app_wifi_print_addresses(void)
         return;
     }
     printf("\n========================================\n");
-    printf(" XIAO camera — Wi-Fi mode (2.4 GHz)\n");
+    printf(" %s — Wi-Fi mode (2.4 GHz)\n", CAMERA_TITLE);
     printf(" IP address:  %s\n", ip_addr_str);
     printf(" Camera URL:  http://%s/\n", ip_addr_str);
     printf("========================================\n\n");

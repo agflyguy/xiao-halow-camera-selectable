@@ -25,6 +25,11 @@
 #include "camera_build_config.h"
 #include "camera_http.h"
 #include "app_log.h"
+#if USE_WIFI
+#include "app_wifi.h"
+#else
+#include "mm_app_common.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -348,6 +353,28 @@ static esp_err_t ping_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t camera_info_handler(httpd_req_t *req)
+{
+    char ip_buf[16] = "0.0.0.0";
+#if USE_WIFI
+    (void)app_wifi_get_ip_addr(ip_buf, sizeof(ip_buf));
+#else
+    (void)app_wlan_get_ip_addr(ip_buf, sizeof(ip_buf));
+#endif
+
+    char json[384];
+    snprintf(json, sizeof(json),
+             "{\"title\":\"%s\",\"static_ip\":%d,\"ip\":\"%s\",\"configured_ip\":\"%s\","
+             "\"gateway\":\"%s\",\"netmask\":\"%s\"}",
+             CAMERA_TITLE, USE_STATIC_IP ? 1 : 0, ip_buf, STATIC_IP, STATIC_GATEWAY,
+             STATIC_NETMASK);
+    app_log_printf("HTTP GET /camera_info\n");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t bmp_handler(httpd_req_t *req)
@@ -1411,7 +1438,7 @@ bool startCameraServer()
     stopCameraServer();
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 17;
 #if USE_WIFI
     config.send_wait_timeout = 20;
     config.recv_wait_timeout = 10;
@@ -1452,6 +1479,19 @@ bool startCameraServer()
         .uri = "/ping",
         .method = HTTP_GET,
         .handler = ping_handler,
+        .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+        ,
+        .is_websocket = true,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = NULL
+#endif
+    };
+
+    httpd_uri_t camera_info_uri = {
+        .uri = "/camera_info",
+        .method = HTTP_GET,
+        .handler = camera_info_handler,
         .user_ctx = NULL
 #ifdef CONFIG_HTTPD_WS_SUPPORT
         ,
@@ -1633,6 +1673,7 @@ bool startCameraServer()
         httpd_register_uri_handler(camera_httpd, &index_uri);
         httpd_register_uri_handler(camera_httpd, &favicon_uri);
         httpd_register_uri_handler(camera_httpd, &ping_uri);
+        httpd_register_uri_handler(camera_httpd, &camera_info_uri);
 #if ENABLE_OV3660_SETTINGS
         httpd_register_uri_handler(camera_httpd, &cmd_uri);
         httpd_register_uri_handler(camera_httpd, &status_uri);

@@ -14,6 +14,7 @@
 #include "app_log.h"
 #include "camera_http.h"
 #include "camera_build_config.h"
+#include "camera_heartbeat.h"
 #if STREAM_RTSP
 #include "camera_rtsp.h"
 #endif
@@ -239,6 +240,19 @@ static bool streaming_services_running(void)
 #endif
 }
 
+static void update_heartbeat_status(void)
+{
+#if USE_WIFI
+    bool link_up = app_wifi_link_is_up();
+    char ip_probe[16];
+    bool have_ip = app_wifi_get_ip_addr(ip_probe, sizeof(ip_probe));
+#else
+    bool link_up = app_wlan_link_is_up();
+    bool have_ip = app_wlan_has_ip();
+#endif
+    camera_heartbeat_set_status(link_up, have_ip, streaming_services_running());
+}
+
 static void print_network_status(void)
 {
     char ip[48];
@@ -334,6 +348,7 @@ static void network_link_task(void *arg)
 #if !USE_WIFI
         app_wlan_arp_send();
 #endif
+        update_heartbeat_status();
         if (++status_ticks >= 30) {
             status_ticks = 0;
             print_network_status();
@@ -345,6 +360,7 @@ static void network_link_task(void *arg)
 void app_main(void)
 {
     printf("\n========================================\n");
+    printf(" Camera: %s\n", CAMERA_TITLE);
     printf(" Seeed XIAO ESP32-S3 Sense + WM6108\n");
 #if USE_WIFI
     printf(" Camera — Wi-Fi mode (HAVEN / 2.4 GHz)\n");
@@ -368,7 +384,15 @@ void app_main(void)
 #else
     printf(" Web UI: stream-only (no settings panel)\n");
 #endif
+#if ENABLE_HEARTBEAT_LED
+    printf(" Status LED heartbeat: ON (GPIO%d, active-%s, after %ds stable link)\n",
+           HEARTBEAT_LED_GPIO,
+           HEARTBEAT_LED_ON ? "high" : "low",
+           HEARTBEAT_STABLE_MS / 1000);
+#endif
     printf("========================================\n\n");
+
+    camera_heartbeat_init();
 
     print_psram_status();
 
@@ -409,6 +433,7 @@ void app_main(void)
 #endif
     print_ready();
     print_network_status();
+    update_heartbeat_status();
 
     xTaskCreate(network_link_task, "net_link", 4096, NULL, 5, NULL);
 }

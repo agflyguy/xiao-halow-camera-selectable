@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Camera</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;background:#181818;color:#EFEFEF;font-size:16px;margin:8px}
+section#buttons{display:flex;flex-wrap:nowrap;gap:8px}
+button,.button{display:block;margin:5px;padding:0 12px;border:0;line-height:28px;cursor:pointer;color:#fff;background:#ff3034;border-radius:5px;font-size:16px;outline:0;text-decoration:none}
+button:hover{background:#ff494d}
+button:active{background:#f21c21}
+figure{padding:0;margin:8px 0 0}
+figure img{display:block;width:100%;height:auto;border-radius:4px}
+.image-container{position:relative;min-width:160px}
+.close{position:absolute;right:5px;top:5px;background:#ff3034;width:16px;height:16px;border-radius:100px;color:#fff;text-align:center;line-height:18px;cursor:pointer}
+.save{position:absolute;right:25px;top:0;height:16px;line-height:16px;padding:0 4px}
+.hidden{display:none}
+@media (min-width:800px) and (orientation:landscape){
+figure img{display:block;max-width:100%;max-height:calc(100vh - 40px);width:auto;height:auto}
+}
+</style>
+</head>
+<body>
+<h1 id="cam-title" style="margin:0 0 4px;font-size:18px;font-weight:400"></h1>
+<p id="cam-ip" style="margin:0 0 10px;color:#aaa;font-size:13px"></p>
+<section id="buttons">
+<button id="get-still">Get Still</button>
+<button id="toggle-stream">Start Stream</button>
+</section>
+<figure>
+<div id="stream-container" class="image-container hidden">
+<a id="save-still" href="#" class="button save" download="capture.jpg">Save</a>
+<div class="close" id="close-stream">&times;</div>
+<img id="stream" src="" crossorigin>
+</div>
+</figure>
+<script>
+function applyCameraInfo(j){
+if(!j)return;
+if(j.title){document.title=j.title;var t=document.getElementById("cam-title");if(t)t.textContent=j.title;}
+var p=document.getElementById("cam-ip");if(p&&j.ip)p.textContent=(j.static_ip?"Static ":"")+j.ip;
+}
+fetch("/camera_info").then(function(r){return r.json()}).then(applyCameraInfo).catch(function(){});
+document.addEventListener("DOMContentLoaded",function(){
+var baseHost=document.location.origin;
+var streamUrl=baseHost;
+var view=document.getElementById("stream");
+var viewContainer=document.getElementById("stream-container");
+var stillButton=document.getElementById("get-still");
+var streamButton=document.getElementById("toggle-stream");
+var closeButton=document.getElementById("close-stream");
+function show(el){el.classList.remove("hidden")}
+function hide(el){el.classList.add("hidden")}
+function stopStream(){window.stop();streamButton.innerHTML="Start Stream"}
+function startStream(){view.src=streamUrl+"/stream";show(viewContainer);streamButton.innerHTML="Stop Stream"}
+stillButton.onclick=function(){stopStream();view.src=baseHost+"/capture?_cb="+Date.now();show(viewContainer)}
+closeButton.onclick=function(){stopStream();hide(viewContainer)}
+streamButton.onclick=function(){if(streamButton.innerHTML==="Stop Stream"){stopStream()}else{startStream()}}
+});
+</script>
+</body>
+</html>
