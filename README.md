@@ -14,12 +14,12 @@ git checkout zm-vlc-curl-verified   # optional: exact tested release
 
 Network modes match the **HT-HC33 / HT-HD01** Arduino camera sketch (`ht-hc33-halow-camera.ino`): same `camera_build_config.h` layout, credentials, link maintenance, and stream error handling.
 
-Edit **`main/camera_build_config.h`** before build (same layout as HT-HC33 Arduino):
+Edit **`main/camera_build_config.h`** before build (copy from **`main/camera_build_config.example.h`** on first clone — see [docs/LOCAL-SECRETS.md](docs/LOCAL-SECRETS.md)):
 
 | `USE_WIFI` | Network | SSID / password | When to use |
 |------------|---------|-----------------|-------------|
 | **0** (default) | Wi-Fi **HaLow** STA | `grey-AP` / `heltec.org` | Classic HaLow AP (e.g. Heltec HT-H7608) |
-| **1** | 2.4 GHz **Wi-Fi** STA | `blue-2g` / `change-me` | HAVEN / OpenMANET **point** AP |
+| **1** | 2.4 GHz **Wi-Fi** STA | `your-2g-ap` / `change-me` | HAVEN / OpenMANET **point** AP |
 
 | `ENABLE_OV3660_SETTINGS` | Web UI |
 |--------------------------|--------|
@@ -52,8 +52,8 @@ Port **80** web UI and `/capture` work in both modes. Only the live video path c
 
 | Define | When | Example |
 |--------|------|---------|
-| `WIFI_SSID` / `WIFI_PASSWORD` | `USE_WIFI 1` | `blue-2g` / `change-me` |
-| `HALOW_SSID` / `HALOW_PASSPHRASE` / `HALOW_COUNTRY` | `USE_WIFI 0` | `gray-M` / `change-me` / `US` |
+| `WIFI_SSID` / `WIFI_PASSWORD` | `USE_WIFI 1` | `your-2g-ap` / `change-me` |
+| `HALOW_SSID` / `HALOW_PASSPHRASE` / `HALOW_COUNTRY` | `USE_WIFI 0` | `your-halow-ap` / `change-me` / `US` |
 
 HaLow can still be overridden at build: `idf.py -DHALOW_SSID=grey-AP -DHALOW_PASSPHRASE=heltec.org build`
 
